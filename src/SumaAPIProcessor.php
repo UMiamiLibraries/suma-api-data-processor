@@ -20,21 +20,26 @@ class SumaAPIProcessor {
 	private $has_more;
 	private $locations;
 	private $daily = false;
+	private $google_drive_folder_id;
 
-	public function __construct($daily = false) {
+	public function __construct( $daily = false ) {
 		global $suma_api_url;
 		global $initiative_id;
 
-		if ($daily){
-			$this->daily = $daily;
-			$yesterday = date('Ymd', time() - 60 * 60 * 24);
-			$this->initial_json = json_decode($this->getJson($suma_api_url . '/sessions?sdate='. $yesterday . '&edate='. $yesterday . '&id=' . $initiative_id));
-		}else{
-			$this->initial_json = json_decode($this->getJson($suma_api_url . '/sessions?id=' . $initiative_id));
+		if ( $daily ) {
+			$this->daily        = $daily;
+			$yesterday          = date( 'Ymd', time() - 60 * 60 * 24 );
+			$this->initial_json = json_decode( $this->getJson( $suma_api_url . '/sessions?sdate=' . $yesterday . '&edate=' . $yesterday . '&id=' . $initiative_id ) );
+			global $google_drive_folder_id;
+			$this->google_drive_folder_id = $google_drive_folder_id;
+		} else {
+			$this->initial_json = json_decode( $this->getJson( $suma_api_url . '/sessions?id=' . $initiative_id ) );
+			global $google_drive_folder_archive_id;
+			$this->google_drive_folder_id = $google_drive_folder_archive_id;
 		}
-		$this->locations = $this->getLocations();
+		$this->locations      = $this->getLocations();
 		$this->initial_offset = $this->getInitialOffset();
-		$this->has_more = $this->hasMore();
+		$this->has_more       = $this->hasMore();
 
 		global $google_json_auth_file_path;
 		$client = new \Google_Client();
@@ -60,11 +65,15 @@ class SumaAPIProcessor {
 			$file_id   = $file_id [ count( $file_id ) - 1 ][0];
 			$row_count = $this->getRowCount( $file_id );
 
-			if ( $row_count > 48500 || $row_count + $new_data_count > 48500 ) {
-				$this->messageMe( 'Creating new spreadsheet' );
-				$this->createSpreadSheet();
-				$this->messageMe( 'New spreadsheet created' );
+			if ( $row_count > 50 || $row_count + $new_data_count > 50 ) {
+				$this->makeRoomForNewRows($new_data_count, $file_id);
+//				$this->messageMe( 'Creating new spreadsheet' );
+//				$this->createSpreadSheet();
+//				$this->messageMe( 'New spreadsheet created' );
 			} else {
+				if ( $this->google_spreadsheet_id != $file_id ) {
+					$this->messageMe( "Google Drive File selected with id: " . $file_id );
+				}
 				$this->google_spreadsheet_id = $file_id;
 			}
 		} else {
@@ -78,13 +87,46 @@ class SumaAPIProcessor {
 			$data     = [];
 			$data[]   = $sessionData['session_id'];
 			$data[]   = $sessionData['activity'];
-			$data[]   = $this->locations[$sessionData['location_id']] . ' (' . $sessionData['location_id'] . ')';
+			$data[]   = $this->locations[ $sessionData['location_id'] ] . ' (' . $sessionData['location_id'] . ')';
 			$data[]   = $sessionData['date'];
 			$data[]   = $sessionData['date'];
 			$values[] = $data;
 		}
 
 		$this->appendValuesToSpreadsheet( $values );
+	}
+
+	private function makeRoomForNewRows($numberOfRowsToMove, $spreadsheetId){
+
+		$range = "Sheet1!2:52";
+		$result = $this->google_spreadsheet_service->spreadsheets_values->get($spreadsheetId, $range);
+
+		var_dump($result);
+		die();
+
+		$range = [
+			'range' => [
+				'sheetId' => 0,
+				'dimension' => "ROWS",
+				'startIndex' => 1,
+				'endIndex' => 50+1
+			]
+		];
+
+		$removeRequests = [
+			// Change the spreadsheet's title.
+			new Google_Service_Sheets_Request([
+				'deleteDimension' => $range
+			])
+		];
+
+// Add additional requests (operations) ...
+		$batchUpdateRequest = new Google_Service_Sheets_BatchUpdateSpreadsheetRequest([
+			'requests' => $removeRequests
+		]);
+		$this->google_spreadsheet_service->spreadsheets->batchUpdate($spreadsheetId, $batchUpdateRequest);
+		var_dump('aaaaaaaaaaa');
+		die();
 	}
 
 	private function getRowCount( $spreadsheet_id ) {
@@ -94,13 +136,12 @@ class SumaAPIProcessor {
 	}
 
 	private function createSpreadSheet() {
-		global $google_drive_folder_id;
 
 		$this->google_drive_file_count = $this->google_drive_file_count + 1;
-		$file_number = $this->google_drive_file_count;
-		$folderId    = $google_drive_folder_id;
-		$requestBody = new Google_Service_Sheets_Spreadsheet();
-		$properties  = new Google_Service_Sheets_SpreadsheetProperties();
+		$file_number                   = $this->google_drive_file_count;
+		$folderId                      = $this->google_drive_folder_id;
+		$requestBody                   = new Google_Service_Sheets_Spreadsheet();
+		$properties                    = new Google_Service_Sheets_SpreadsheetProperties();
 		$properties->setTitle( 'sumaData_' . $file_number );
 		$requestBody->setProperties( $properties );
 		$response = $this->google_spreadsheet_service->spreadsheets->create( $requestBody );
@@ -115,6 +156,7 @@ class SumaAPIProcessor {
 			'fields'        => 'id, parents'
 		) );
 
+		$this->messageMe( "New Google Drive File created with id: " . $file_id );
 		$this->google_spreadsheet_id = $file_id;
 
 		$values   = [];
@@ -131,6 +173,7 @@ class SumaAPIProcessor {
 
 	private function appendValuesToSpreadsheet( $values ) {
 
+		$this->messageMe( "Sending " . count( $values ) . " elements to Google Drive file" );
 		$body   = new Google_Service_Sheets_ValueRange( [
 			'values' => $values
 		] );
@@ -147,12 +190,11 @@ class SumaAPIProcessor {
 	}
 
 	private function getGoogleDriveFileId() {
-		global $google_drive_folder_id;
 		$file_ids  = [];
 		$pageToken = null;
 		do {
 			$response = $this->google_drive_service->files->listFiles( array(
-				'q'         => "'".$google_drive_folder_id."' in parents and mimeType='application/vnd.google-apps.spreadsheet'",
+				'q'         => "'" . $this->google_drive_folder_id . "' in parents and mimeType='application/vnd.google-apps.spreadsheet'",
 				'spaces'    => 'drive',
 				'pageToken' => $pageToken,
 				'fields'    => 'nextPageToken, files(id, name)',
@@ -177,26 +219,26 @@ class SumaAPIProcessor {
 		return [];
 	}
 
-	public function getCountsFromBeginningOfTime(){
+	public function getCountsFromBeginningOfTime() {
 		$sessionsData = array();
-		do{
+		do {
 			$sessionsData = $this->getSessionsData();
-			$this->updateGoogleSheet($sessionsData);
+			$this->updateGoogleSheet( $sessionsData );
 			$sessionsData = array();
 			$this->movePagination();
 
-		}while ($this->has_more);
+		} while ( $this->has_more );
 	}
 
-	public function getPreviousDayCount(){
+	public function getPreviousDayCount() {
 		$sessionsData = array();
-		do{
+		do {
 			$sessionsData = $this->getSessionsData();
-			$this->updateGoogleSheet($sessionsData);
+			$this->updateGoogleSheet( $sessionsData );
 			$sessionsData = array();
 			$this->movePagination();
 
-		}while ($this->has_more);
+		} while ( $this->has_more );
 	}
 
 	public function remove_all_from_google_drive() {
@@ -205,6 +247,7 @@ class SumaAPIProcessor {
 		$errors = [];
 		foreach ( $file_ids as $file_id ) {
 			try {
+				$this->messageMe( "Deleting Google Drive File with id: " . $file_id[0] );
 				$this->google_drive_service->files->delete( $file_id[0] );
 			} catch ( Exception $e ) {
 				$errors[] = [ $e, $file_id[1] ];
@@ -220,89 +263,89 @@ class SumaAPIProcessor {
 
 	}
 
-	private function movePagination(){
+	private function movePagination() {
 		global $suma_api_url;
 		global $initiative_id;
-		$this->initial_offset = $this->initial_offset+10000;
+		$this->initial_offset = $this->initial_offset + 10000;
 
-		if ($this->daily){
-			$yesterday = date('Ymd', time() - 60 * 60 * 24);
-			$this->initial_json = json_decode($this->getJson($suma_api_url . '/sessions?sdate='. $yesterday . '&edate='. $yesterday . '&id=' . $initiative_id . '&offset=' . $this->initial_offset));
-
-		}else{
-			$this->initial_json = json_decode($this->getJson($suma_api_url . '/sessions?id=' . $initiative_id . '&offset=' . $this->initial_offset));
+		if ( $this->daily ) {
+			$yesterday          = date( 'Ymd', time() - 60 * 60 * 24 );
+			$this->initial_json = json_decode( $this->getJson( $suma_api_url . '/sessions?sdate=' . $yesterday . '&edate=' . $yesterday . '&id=' . $initiative_id . '&offset=' . $this->initial_offset ) );
+		} else {
+			$this->initial_json = json_decode( $this->getJson( $suma_api_url . '/sessions?id=' . $initiative_id . '&offset=' . $this->initial_offset ) );
 		}
 		$this->has_more = $this->hasMore();
 	}
 
-	private function getSessionsData(){
+	private function getSessionsData() {
 		$result = array();
 
-		if (isset($this->initial_json->initiative->sessions)){
+		if ( isset( $this->initial_json->initiative->sessions ) ) {
 			$sessions = $this->initial_json->initiative->sessions;
 
-			foreach ($sessions as $session){
-				$temp = array();
-				$session_id = $session->id;
-				$temp_date     = date_create_from_format( 'Y-m-d H:i:s', trim( $session->start) );
+			foreach ( $sessions as $session ) {
+				$temp          = array();
+				$session_id    = $session->id;
+				$temp_date     = date_create_from_format( 'Y-m-d H:i:s', trim( $session->start ) );
 				$session_start = date_format( $temp_date, 'm/d/Y H:i' );
 
-				$location_count = 0;
-				$current_location_id ="";
+				$location_count      = 0;
+				$current_location_id = "";
 
-				foreach ($session->counts as $count){
-					if (empty($current_location_id)){
+				foreach ( $session->counts as $count ) {
+					if ( empty( $current_location_id ) ) {
 						$current_location_id = $count->location;
-						$location_count++;
-					}elseif ($current_location_id != $count->location){
-						$temp['session_id'] = $session_id;
-						$temp['activity'] = $location_count;
+						$location_count ++;
+					} elseif ( $current_location_id != $count->location ) {
+						$temp['session_id']  = $session_id;
+						$temp['activity']    = $location_count;
 						$temp['location_id'] = $current_location_id;
-						$temp['date'] = $session_start;
+						$temp['date']        = $session_start;
 
 						$result[] = $temp;
 
 						$current_location_id = $count->location;
-						$temp = array();
-						$location_count = 1;
-					}else{
-						$location_count++;
+						$temp                = array();
+						$location_count      = 1;
+					} else {
+						$location_count ++;
 					}
 				}
 
-				if ($location_count != 0){
-					$temp['session_id'] = $session_id;
-					$temp['activity'] = $location_count;
+				if ( $location_count != 0 ) {
+					$temp['session_id']  = $session_id;
+					$temp['activity']    = $location_count;
 					$temp['location_id'] = $current_location_id;
-					$temp['date'] = $session_start;
-					$result[] = $temp;
+					$temp['date']        = $session_start;
+					$result[]            = $temp;
 				}
 
 			}
 		}
-
 
 		return $result;
 	}
 
 	private function messageMe( $message ) {
-		echo $message . PHP_EOL;
+		$date = new DateTime();
+		$date = $date->format( "y:m:d h:i:s" );
+		echo $date . " " . $message . PHP_EOL;
 	}
 
-	private function hasMore(){
-		if (isset($this->initial_json->status->{'has more'})){
+	private function hasMore() {
+		if ( isset( $this->initial_json->status->{'has more'} ) ) {
 			return $this->initial_json->status->{'has more'} === 'true';
 		}
 	}
 
-	private function getLocations(){
+	private function getLocations() {
 
 		$result = array();
 
-		foreach ($this->initial_json as $location_dictionary){
-			if (isset($location_dictionary->dictionary->locations)){
-				foreach ($location_dictionary->dictionary->locations as $location_element){
-					$result[$location_element->id] = $location_element->title;
+		foreach ( $this->initial_json as $location_dictionary ) {
+			if ( isset( $location_dictionary->dictionary->locations ) ) {
+				foreach ( $location_dictionary->dictionary->locations as $location_element ) {
+					$result[ $location_element->id ] = $location_element->title;
 				}
 			}
 		}
@@ -310,18 +353,18 @@ class SumaAPIProcessor {
 		return $result;
 	}
 
-	private function getInitialOffset(){
-		if (isset($this->initial_json->status->offset)){
+	private function getInitialOffset() {
+		if ( isset( $this->initial_json->status->offset ) ) {
 			return $this->initial_json->status->offset;
 		}
 	}
 
-	private function getJson($url){
+	private function getJson( $url ) {
 
 		$ch = curl_init();
 		curl_setopt( $ch, CURLOPT_SSL_VERIFYPEER, false );
 		curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
-		curl_setopt( $ch, CURLOPT_URL, $url);
+		curl_setopt( $ch, CURLOPT_URL, $url );
 		$result = curl_exec( $ch );
 		curl_close( $ch );
 
