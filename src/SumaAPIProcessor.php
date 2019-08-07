@@ -98,11 +98,10 @@ class SumaAPIProcessor {
 
 	private function makeRoomForNewRows($numberOfRowsToMove, $spreadsheetId){
 
-		$range = "Sheet1!2:52";
-		$result = $this->google_spreadsheet_service->spreadsheets_values->get($spreadsheetId, $range);
+		$range = "Sheet1!2:".$numberOfRowsToMove+2;
+		$rowsToArchive = $this->google_spreadsheet_service->spreadsheets_values->get($spreadsheetId, $range);
 
-		var_dump($result);
-		die();
+		$this->archiveRows($rowsToArchive);
 
 		$range = [
 			'range' => [
@@ -126,6 +125,11 @@ class SumaAPIProcessor {
 		]);
 		$this->google_spreadsheet_service->spreadsheets->batchUpdate($spreadsheetId, $batchUpdateRequest);
 		var_dump('aaaaaaaaaaa');
+		die();
+	}
+
+	private function archiveRows($rows){
+		var_dump($rows);
 		die();
 	}
 
