@@ -21,6 +21,7 @@ class SumaAPIProcessor {
 	private $locations;
 	private $daily = false;
 	private $google_drive_folder_id;
+	private $google_drive_folder_archive_id;
 
 	public function __construct( $daily = false ) {
 		global $suma_api_url;
@@ -30,16 +31,17 @@ class SumaAPIProcessor {
 			$this->daily        = $daily;
 			$yesterday          = date( 'Ymd', time() - 60 * 60 * 24 );
 			$this->initial_json = json_decode( $this->getJson( $suma_api_url . '/sessions?sdate=' . $yesterday . '&edate=' . $yesterday . '&id=' . $initiative_id ) );
-			global $google_drive_folder_id;
-			$this->google_drive_folder_id = $google_drive_folder_id;
 		} else {
 			$this->initial_json = json_decode( $this->getJson( $suma_api_url . '/sessions?id=' . $initiative_id ) );
-			global $google_drive_folder_archive_id;
-			$this->google_drive_folder_id = $google_drive_folder_archive_id;
 		}
-		$this->locations      = $this->getLocations();
-		$this->initial_offset = $this->getInitialOffset();
-		$this->has_more       = $this->hasMore();
+		global $google_drive_folder_id;
+		global $google_drive_folder_archive_id;
+
+		$this->google_drive_folder_id         = $google_drive_folder_id;
+		$this->google_drive_folder_archive_id = $google_drive_folder_archive_id;
+		$this->locations                      = $this->getLocations();
+		$this->initial_offset                 = $this->getInitialOffset();
+		$this->has_more                       = $this->hasMore();
 
 		global $google_json_auth_file_path;
 		$client = new \Google_Client();
@@ -55,32 +57,65 @@ class SumaAPIProcessor {
 
 	}
 
-	private function updateGoogleSheet( $sessionsData ) {
-		$values         = [];
-		$new_data_count = count( $sessionsData );
+	private function updateGoogleSheet( $data, $archive = false ) {
+		$new_data_count = count( $data );
 
-		$file_id = $this->getGoogleDriveFileId();
+		if ( ! $archive ) {
+			$file_id = $this->getGoogleDriveFileId( $this->google_drive_folder_id );
+		} else {
+			$file_id = $this->getGoogleDriveFileId( $this->google_drive_folder_archive_id );
+		}
 
 		if ( ! empty( $file_id ) ) {
-			$file_id   = $file_id [ count( $file_id ) - 1 ][0];
-			$row_count = $this->getRowCount( $file_id );
+			$file_id              = $file_id [ count( $file_id ) - 1 ][0];
+			$row_count            = $this->getRowCount( $file_id );
+			$newSpreadSheetNeeded = ( $row_count > 145000 || $row_count + $new_data_count > 145000 ) ? true : false;
 
-			if ( $row_count > 50 || $row_count + $new_data_count > 50 ) {
-				$this->makeRoomForNewRows($new_data_count, $file_id);
-//				$this->messageMe( 'Creating new spreadsheet' );
-//				$this->createSpreadSheet();
-//				$this->messageMe( 'New spreadsheet created' );
-			} else {
-				if ( $this->google_spreadsheet_id != $file_id ) {
+			if ( ! $archive ) {
+				$this->messageMe( "Making room in file with id: " . $file_id );
+				$this->makeRoomForNewRows( $new_data_count, $file_id );
+				$this->messageMe( "Finished making room in file with id: " . $file_id );
+			} elseif ( $newSpreadSheetNeeded ) {
+				$this->messageMe( 'Creating new spreadsheet in archive' );
+				$this->createSpreadSheet( $archive );
+				$this->messageMe( 'New spreadsheet created in archive' );
+			}
+
+			if ( $this->google_spreadsheet_id != $file_id ) {
+				if ($archive){
+					$this->messageMe( "Google Drive File for archive selected with id: " . $file_id );
+				}else{
 					$this->messageMe( "Google Drive File selected with id: " . $file_id );
 				}
-				$this->google_spreadsheet_id = $file_id;
 			}
+			$this->google_spreadsheet_id = $file_id;
 		} else {
 			$this->messageMe( 'Creating new spreadsheet' );
-			$this->createSpreadSheet();
+			$this->createSpreadSheet( $archive );
 			$this->messageMe( 'New spreadsheet created' );
 		}
+
+		$values = ! $archive ? $this->prepareValuesForSpreadsheet( $data ) : $this->prepareValuesForArchiving( $data );
+
+		$this->appendValuesToSpreadsheet( $values, $this->google_spreadsheet_id );
+	}
+
+	private function prepareValuesForArchiving( $rows ) {
+		$values = [];
+
+		foreach ( $rows as $row ) {
+			$data = [];
+			foreach ($row as $key=>$value){
+				$data[] = $value;
+			}
+			$values[] = $data;
+		}
+
+		return $values;
+	}
+
+	private function prepareValuesForSpreadsheet( $sessionsData ) {
+		$values = [];
 
 		foreach ( $sessionsData as $sessionData ) {
 
@@ -93,44 +128,44 @@ class SumaAPIProcessor {
 			$values[] = $data;
 		}
 
-		$this->appendValuesToSpreadsheet( $values );
+		return $values;
 	}
 
-	private function makeRoomForNewRows($numberOfRowsToMove, $spreadsheetId){
+	private function makeRoomForNewRows( $numberOfRowsToMove, $spreadsheetId ) {
 
-		$range = "Sheet1!2:".$numberOfRowsToMove+2;
-		$rowsToArchive = $this->google_spreadsheet_service->spreadsheets_values->get($spreadsheetId, $range);
+		$this->messageMe( "Getting: " . $numberOfRowsToMove . " rows from file: " . $spreadsheetId );
 
-		$this->archiveRows($rowsToArchive);
-		//testing vs code
+		$readRange = $numberOfRowsToMove + 2;
+		$range     = "Sheet1!2:" . $readRange;
+
+		$rowsToArchive = $this->google_spreadsheet_service->spreadsheets_values->get( $spreadsheetId, $range );
+		$rowsToArchive = $rowsToArchive->getValues();
+
+		$this->messageMe( "Moving: " . $numberOfRowsToMove . " rows from file: " . $spreadsheetId );
+		$this->updateGoogleSheet( $rowsToArchive, true );
+		$this->messageMe( "Done moving: " . $numberOfRowsToMove . " rows from file: " . $spreadsheetId );
+
 		$range = [
 			'range' => [
-				'sheetId' => 0,
-				'dimension' => "ROWS",
+				'sheetId'    => 0,
+				'dimension'  => "ROWS",
 				'startIndex' => 1,
-				'endIndex' => 50+1
+				'endIndex'   => $numberOfRowsToMove + 1
 			]
 		];
 
 		$removeRequests = [
 			// Change the spreadsheet's title.
-			new Google_Service_Sheets_Request([
+			new Google_Service_Sheets_Request( [
 				'deleteDimension' => $range
-			])
+			] )
 		];
 
 // Add additional requests (operations) ...
-		$batchUpdateRequest = new Google_Service_Sheets_BatchUpdateSpreadsheetRequest([
+		$batchUpdateRequest = new Google_Service_Sheets_BatchUpdateSpreadsheetRequest( [
 			'requests' => $removeRequests
-		]);
-		$this->google_spreadsheet_service->spreadsheets->batchUpdate($spreadsheetId, $batchUpdateRequest);
-		var_dump('aaaaaaaaaaa');
-		die();
-	}
-
-	private function archiveRows($rows){
-		var_dump($rows);
-		die();
+		] );
+		$this->google_spreadsheet_service->spreadsheets->batchUpdate( $spreadsheetId, $batchUpdateRequest );
 	}
 
 	private function getRowCount( $spreadsheet_id ) {
@@ -139,14 +174,13 @@ class SumaAPIProcessor {
 		return $row_count;
 	}
 
-	private function createSpreadSheet() {
+	private function createSpreadSheet( $archive = false ) {
 
-		$this->google_drive_file_count = $this->google_drive_file_count + 1;
-		$file_number                   = $this->google_drive_file_count;
-		$folderId                      = $this->google_drive_folder_id;
-		$requestBody                   = new Google_Service_Sheets_Spreadsheet();
-		$properties                    = new Google_Service_Sheets_SpreadsheetProperties();
-		$properties->setTitle( 'sumaData_' . $file_number );
+		$folderId    = ! $archive ? $this->google_drive_folder_id : $this->google_drive_folder_archive_id;
+		$requestBody = new Google_Service_Sheets_Spreadsheet();
+		$properties  = new Google_Service_Sheets_SpreadsheetProperties();
+		$title       = ! $archive ? "sumaData" : 'sumaDataArchive_' . time();
+		$properties->setTitle( $title );
 		$requestBody->setProperties( $properties );
 		$response = $this->google_spreadsheet_service->spreadsheets->create( $requestBody );
 		$file_id  = $response->getSpreadsheetId();
@@ -172,10 +206,10 @@ class SumaAPIProcessor {
 		$data[]   = "Combine";
 		$values[] = $data;
 
-		$this->appendValuesToSpreadsheet( $values );
+		$this->appendValuesToSpreadsheet( $values, $this->google_spreadsheet_id );
 	}
 
-	private function appendValuesToSpreadsheet( $values ) {
+	private function appendValuesToSpreadsheet( $values, $file_id ) {
 
 		$this->messageMe( "Sending " . count( $values ) . " elements to Google Drive file" );
 		$body   = new Google_Service_Sheets_ValueRange( [
@@ -184,7 +218,7 @@ class SumaAPIProcessor {
 		$params = [ "valueInputOption" => "USER_ENTERED" ];
 
 		try {
-			$this->google_spreadsheet_service->spreadsheets_values->append( $this->google_spreadsheet_id, $this->google_spreadsheet_range,
+			$this->google_spreadsheet_service->spreadsheets_values->append( $file_id, $this->google_spreadsheet_range,
 				$body, $params );
 		} catch ( Exception $e ) {
 			//Todo handle error
@@ -193,12 +227,12 @@ class SumaAPIProcessor {
 		}
 	}
 
-	private function getGoogleDriveFileId() {
+	private function getGoogleDriveFileId( $folder_id ) {
 		$file_ids  = [];
 		$pageToken = null;
 		do {
 			$response = $this->google_drive_service->files->listFiles( array(
-				'q'         => "'" . $this->google_drive_folder_id . "' in parents and mimeType='application/vnd.google-apps.spreadsheet'",
+				'q'         => "'" . $folder_id . "' in parents and mimeType='application/vnd.google-apps.spreadsheet'",
 				'spaces'    => 'drive',
 				'pageToken' => $pageToken,
 				'fields'    => 'nextPageToken, files(id, name)',
@@ -227,7 +261,7 @@ class SumaAPIProcessor {
 		$sessionsData = array();
 		do {
 			$sessionsData = $this->getSessionsData();
-			$this->updateGoogleSheet( $sessionsData );
+			$this->updateGoogleSheet( $sessionsData, true );
 			$sessionsData = array();
 			$this->movePagination();
 
@@ -245,10 +279,10 @@ class SumaAPIProcessor {
 		} while ( $this->has_more );
 	}
 
-	public function remove_all_from_google_drive() {
-		$file_ids = $this->getGoogleDriveFileId();
-
-		$errors = [];
+	public function remove_all_from_google_drive( $archive = false ) {
+		$folder_id = ! $archive ? $this->google_drive_folder_id : $this->google_drive_folder_archive_id;
+		$file_ids  = $this->getGoogleDriveFileId( $folder_id );
+		$errors    = [];
 		foreach ( $file_ids as $file_id ) {
 			try {
 				$this->messageMe( "Deleting Google Drive File with id: " . $file_id[0] );

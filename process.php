@@ -23,7 +23,7 @@ foreach ($argv as $arg){
 			break;
 		case "delete-all-archive":
 			$harvester = new SumaAPIProcessor(false);
-			$harvester->remove_all_from_google_drive();
+			$harvester->remove_all_from_google_drive(true);
 			die();
 			break;
 		case "delete-all-daily":
