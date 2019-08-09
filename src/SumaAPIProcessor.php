@@ -72,9 +72,11 @@ class SumaAPIProcessor {
 			$newSpreadSheetNeeded = ( $row_count > 145000 || $row_count + $new_data_count > 145000 ) ? true : false;
 
 			if ( ! $archive ) {
-				$this->messageMe( "Making room in file with id: " . $file_id );
-				$this->makeRoomForNewRows( $new_data_count, $file_id );
-				$this->messageMe( "Finished making room in file with id: " . $file_id );
+				if ($newSpreadSheetNeeded){
+					$this->messageMe( "Making room in file with id: " . $file_id );
+					$this->makeRoomForNewRows( $new_data_count, $file_id );
+					$this->messageMe( "Finished making room in file with id: " . $file_id );
+				}
 			} elseif ( $newSpreadSheetNeeded ) {
 				$this->messageMe( 'Creating new spreadsheet in archive' );
 				$this->createSpreadSheet( $archive );
@@ -106,7 +108,11 @@ class SumaAPIProcessor {
 		foreach ( $rows as $row ) {
 			$data = [];
 			foreach ($row as $key=>$value){
-				$data[] = $value;
+				if ($key == "location_id" || $key == 2){
+					$data[] = $this->locations[ $value ] . ' (' . $value . ')';
+				}else{
+					$data[] = $value;
+				}
 			}
 			$values[] = $data;
 		}
@@ -155,13 +161,11 @@ class SumaAPIProcessor {
 		];
 
 		$removeRequests = [
-			// Change the spreadsheet's title.
 			new Google_Service_Sheets_Request( [
 				'deleteDimension' => $range
 			] )
 		];
 
-// Add additional requests (operations) ...
 		$batchUpdateRequest = new Google_Service_Sheets_BatchUpdateSpreadsheetRequest( [
 			'requests' => $removeRequests
 		] );
@@ -258,24 +262,18 @@ class SumaAPIProcessor {
 	}
 
 	public function getCountsFromBeginningOfTime() {
-		$sessionsData = array();
 		do {
 			$sessionsData = $this->getSessionsData();
 			$this->updateGoogleSheet( $sessionsData, true );
-			$sessionsData = array();
 			$this->movePagination();
-
 		} while ( $this->has_more );
 	}
 
 	public function getPreviousDayCount() {
-		$sessionsData = array();
 		do {
 			$sessionsData = $this->getSessionsData();
 			$this->updateGoogleSheet( $sessionsData );
-			$sessionsData = array();
 			$this->movePagination();
-
 		} while ( $this->has_more );
 	}
 
