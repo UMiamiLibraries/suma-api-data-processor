@@ -9,9 +9,6 @@
 
 include_once getcwd() .  "/src/config/config.php";
 include_once getcwd() . '/src/SumaAPIProcessor.php';
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
 foreach ($argv as $arg){
 	$arg = escapeshellcmd($arg);
 
