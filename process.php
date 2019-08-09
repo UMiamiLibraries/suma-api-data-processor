@@ -9,7 +9,6 @@
 
 include_once getcwd() .  "/src/config/config.php";
 include_once getcwd() . '/src/SumaAPIProcessor.php';
-
 foreach ($argv as $arg){
 	$arg = escapeshellcmd($arg);
 
@@ -19,8 +18,13 @@ foreach ($argv as $arg){
 			$harvester->getCountsFromBeginningOfTime();
 			die();
 			break;
-		case "delete-all":
-			$harvester = new SumaAPIProcessor();
+		case "delete-all-archive":
+			$harvester = new SumaAPIProcessor(false);
+			$harvester->remove_all_from_google_drive(true);
+			die();
+			break;
+		case "delete-all-daily":
+			$harvester = new SumaAPIProcessor(true);
 			$harvester->remove_all_from_google_drive();
 			die();
 			break;
