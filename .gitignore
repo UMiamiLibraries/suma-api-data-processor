@@ -1,8 +1,8 @@
 
 \.idea/
 
-vendor/
-
 src/config/config\.php
 
 src/config/auth\.json
+
+vendor/
